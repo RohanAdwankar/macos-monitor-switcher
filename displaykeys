@@ -12,7 +12,12 @@ fi
 
 case "${1:-open}" in
   open)
-    open "$ROOT_DIR/build/DisplayKeys.app"
+    "$APP_BIN" quit >/dev/null 2>&1 || true
+    sleep 1
+    open -n "$ROOT_DIR/build/DisplayKeys.app" >/tmp/displaykeys-open.log 2>&1 || {
+      sleep 1
+      open -n "$ROOT_DIR/build/DisplayKeys.app" >/tmp/displaykeys-open.log 2>&1
+    }
     ;;
   left|right|quit)
     "$APP_BIN" "$1"

@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 
 private let bundleIdentifier = "local.displaykeys"
+private let logFile = "/tmp/displaykeys.log"
 
 extension Notification.Name {
     static let displayKeysMoveLeft = Notification.Name("DisplayKeysMoveLeft")
@@ -39,46 +40,48 @@ final class DisplayController {
 
     func perform(_ move: Move) {
         guard ensureAccessibility(prompt: true) else {
+            log("move=\(move) failed=accessibility")
             NSSound.beep()
             return
         }
 
-        guard let currentScreen = screenContaining(point: NSEvent.mouseLocation),
-              let targetScreen = adjacentScreen(from: currentScreen, move: move)
+        let currentLocation = CGEvent(source: nil)?.location ?? .zero
+        log("move=\(move) start currentLocation=\(currentLocation)")
+
+        guard let targetScreen = targetScreen(for: move),
+              let targetDisplayID = displayID(for: targetScreen)
         else {
+            let screens = NSScreen.screens.compactMap { screen -> String? in
+                guard let id = displayID(for: screen) else { return nil }
+                return "id=\(id) bounds=\(CGDisplayBounds(id))"
+            }.joined(separator: " | ")
+            log("move=\(move) failed=screen-selection currentLocation=\(currentLocation) screens=\(screens)")
             NSSound.beep()
             return
         }
 
-        let frame = targetScreen.frame
-        let insetX: CGFloat = min(max(frame.width * 0.03, 12), 80)
-        let point = CGPoint(
-            x: move == .left ? frame.maxX - insetX : frame.minX + insetX,
-            y: frame.midY
+        let targetBounds = CGDisplayBounds(targetDisplayID)
+        let inset: CGFloat = 10
+        let localTarget = CGPoint(
+            x: move == .left ? inset : targetBounds.width - inset,
+            y: inset
         )
-        let currentFrame = currentScreen.frame
-        let topY = min(currentFrame.maxY - 8, NSScreen.screens.map(\.frame.maxY).max() ?? currentFrame.maxY)
-        let stagingPoint = CGPoint(x: NSEvent.mouseLocation.x, y: topY)
-        let bridgePoint = CGPoint(x: point.x, y: topY)
 
         let source = CGEventSource(stateID: .hidSystemState)
-        CGWarpMouseCursorPosition(stagingPoint)
-        usleep(50_000)
-        CGWarpMouseCursorPosition(bridgePoint)
-        usleep(50_000)
-        CGWarpMouseCursorPosition(point)
-        usleep(50_000)
+        CGDisplayMoveCursorToPoint(targetDisplayID, localTarget)
+        usleep(35_000)
 
-        guard let moved = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left),
-              let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
-              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+        let clickPoint = CGEvent(source: nil)?.location ?? currentLocation
+        log("move=\(move) current=\(currentLocation) targetBounds=\(targetBounds) localTarget=\(localTarget) click=\(clickPoint)")
+
+        guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: clickPoint, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: clickPoint, mouseButton: .left)
         else {
+            log("move=\(move) failed=event-creation click=\(clickPoint)")
             NSSound.beep()
             return
         }
 
-        moved.post(tap: .cghidEventTap)
-        usleep(20_000)
         down.post(tap: .cghidEventTap)
         usleep(20_000)
         up.post(tap: .cghidEventTap)
@@ -92,28 +95,40 @@ final class DisplayController {
         return AXIsProcessTrusted()
     }
 
-    private func adjacentScreen(from currentScreen: NSScreen, move: Move) -> NSScreen? {
-        let currentFrame = currentScreen.frame
-        let candidates = NSScreen.screens.filter { $0 != currentScreen }
-
-        switch move {
-        case .left:
-            return candidates
-                .filter { $0.frame.midX < currentFrame.midX }
-                .min { lhs, rhs in
-                    abs(lhs.frame.midX - currentFrame.midX) < abs(rhs.frame.midX - currentFrame.midX)
-                }
-        case .right:
-            return candidates
-                .filter { $0.frame.midX > currentFrame.midX }
-                .min { lhs, rhs in
-                    abs(lhs.frame.midX - currentFrame.midX) < abs(rhs.frame.midX - currentFrame.midX)
-                }
+    private func screenContaining(point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first { screen in
+            guard let id = displayID(for: screen) else { return false }
+            return CGDisplayBounds(id).contains(point)
         }
     }
 
-    private func screenContaining(point: CGPoint) -> NSScreen? {
-        NSScreen.screens.first { $0.frame.contains(point) }
+    private func targetScreen(for move: Move) -> NSScreen? {
+        let screens = NSScreen.screens.sorted { lhs, rhs in
+            lhs.frame.midX < rhs.frame.midX
+        }
+        guard !screens.isEmpty else { return nil }
+        return move == .left ? screens.first : screens.last
+    }
+
+    private func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+        return CGDirectDisplayID(screenNumber.uint32Value)
+    }
+
+    private func log(_ message: String) {
+        let line = "\(Date()) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+
+        if FileManager.default.fileExists(atPath: logFile),
+           let handle = FileHandle(forWritingAtPath: logFile) {
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            FileManager.default.createFile(atPath: logFile, contents: data)
+        }
     }
 }
 
