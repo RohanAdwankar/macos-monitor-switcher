@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 
 private let bundleIdentifier = "local.displaykeys"
 
@@ -55,8 +56,16 @@ final class DisplayController {
             x: move == .left ? frame.maxX - insetX : frame.minX + insetX,
             y: frame.midY
         )
+        let currentFrame = currentScreen.frame
+        let topY = min(currentFrame.maxY - 8, NSScreen.screens.map(\.frame.maxY).max() ?? currentFrame.maxY)
+        let stagingPoint = CGPoint(x: NSEvent.mouseLocation.x, y: topY)
+        let bridgePoint = CGPoint(x: point.x, y: topY)
 
         let source = CGEventSource(stateID: .hidSystemState)
+        CGWarpMouseCursorPosition(stagingPoint)
+        usleep(50_000)
+        CGWarpMouseCursorPosition(bridgePoint)
+        usleep(50_000)
         CGWarpMouseCursorPosition(point)
         usleep(50_000)
 
@@ -108,6 +117,70 @@ final class DisplayController {
     }
 }
 
+enum ShortcutAction: UInt32 {
+    case left = 1
+    case right = 2
+}
+
+struct ShortcutDefinition {
+    let action: ShortcutAction
+    let keyCode: UInt32
+    let modifiers: UInt32
+}
+
+final class HotKeyCenter {
+    static let shared = HotKeyCenter()
+
+    private let signature: OSType = 0x4453504B // DSPK
+    private var handlers: [UInt32: () -> Void] = [:]
+    private var registeredHotKeys: [EventHotKeyRef?] = []
+    private var eventHandler: EventHandlerRef?
+
+    func register(_ shortcut: ShortcutDefinition, handler: @escaping () -> Void) {
+        installHandlerIfNeeded()
+
+        var hotKeyRef: EventHotKeyRef?
+        let hotKeyID = EventHotKeyID(signature: signature, id: shortcut.action.rawValue)
+        let status = RegisterEventHotKey(shortcut.keyCode,
+                                         shortcut.modifiers,
+                                         hotKeyID,
+                                         GetEventDispatcherTarget(),
+                                         0,
+                                         &hotKeyRef)
+
+        guard status == noErr else {
+            NSLog("Failed to register hotkey \(shortcut.action) status=\(status)")
+            return
+        }
+
+        handlers[shortcut.action.rawValue] = handler
+        registeredHotKeys.append(hotKeyRef)
+    }
+
+    private func installHandlerIfNeeded() {
+        guard eventHandler == nil else { return }
+
+        var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                      eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetEventDispatcherTarget(), { _, event, _ in
+            guard let event else { return noErr }
+
+            var hotKeyID = EventHotKeyID()
+            let status = GetEventParameter(event,
+                                           EventParamName(kEventParamDirectObject),
+                                           EventParamType(typeEventHotKeyID),
+                                           nil,
+                                           MemoryLayout<EventHotKeyID>.size,
+                                           nil,
+                                           &hotKeyID)
+            guard status == noErr else { return noErr }
+
+            HotKeyCenter.shared.handlers[hotKeyID.id]?()
+            return noErr
+        }, 1, &eventSpec, nil, &eventHandler)
+    }
+}
+
 final class DisplayKeysApp: NSObject, NSApplicationDelegate {
     private let displayController = DisplayController()
     private var statusItem: NSStatusItem?
@@ -117,6 +190,7 @@ final class DisplayKeysApp: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
         registerObservers()
+        registerHotKeys()
         _ = displayController.ensureAccessibility(prompt: true)
     }
 
@@ -153,6 +227,28 @@ final class DisplayKeysApp: NSObject, NSApplicationDelegate {
         observers.append(center.addObserver(forName: .displayKeysQuit, object: bundleIdentifier, queue: .main) { _ in
             NSApp.terminate(nil)
         })
+    }
+
+    private func registerHotKeys() {
+        let shortcuts = [
+            ShortcutDefinition(action: .left,
+                               keyCode: UInt32(kVK_LeftArrow),
+                               modifiers: UInt32(controlKey | shiftKey)),
+            ShortcutDefinition(action: .right,
+                               keyCode: UInt32(kVK_RightArrow),
+                               modifiers: UInt32(controlKey | shiftKey))
+        ]
+
+        for shortcut in shortcuts {
+            HotKeyCenter.shared.register(shortcut) { [weak self] in
+                switch shortcut.action {
+                case .left:
+                    self?.displayController.perform(.left)
+                case .right:
+                    self?.displayController.perform(.right)
+                }
+            }
+        }
     }
 
     @objc private func moveLeft() {

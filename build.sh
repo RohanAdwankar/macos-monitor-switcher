@@ -45,4 +45,6 @@ mkdir -p "$MACOS_DIR"
 </plist>
 PLIST
 
+/usr/bin/codesign --force --deep --sign - "$APP_DIR"
+
 echo "Built $APP_DIR"
