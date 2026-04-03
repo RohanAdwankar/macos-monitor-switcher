@@ -62,17 +62,23 @@ final class DisplayController {
 
         let targetBounds = CGDisplayBounds(targetDisplayID)
         let inset: CGFloat = 10
-        let localTarget = CGPoint(
+        let entryPoint = CGPoint(
             x: move == .left ? inset : targetBounds.width - inset,
             y: inset
         )
+        let safePoint = CGPoint(
+            x: move == .left ? min(targetBounds.width * 0.35, targetBounds.width - 40) : max(targetBounds.width * 0.65, 40),
+            y: min(targetBounds.height * 0.75, targetBounds.height - 80)
+        )
 
         let source = CGEventSource(stateID: .hidSystemState)
-        CGDisplayMoveCursorToPoint(targetDisplayID, localTarget)
+        CGDisplayMoveCursorToPoint(targetDisplayID, entryPoint)
+        usleep(35_000)
+        CGDisplayMoveCursorToPoint(targetDisplayID, safePoint)
         usleep(35_000)
 
         let clickPoint = CGEvent(source: nil)?.location ?? currentLocation
-        log("move=\(move) current=\(currentLocation) targetBounds=\(targetBounds) localTarget=\(localTarget) click=\(clickPoint)")
+        log("move=\(move) current=\(currentLocation) targetBounds=\(targetBounds) entryPoint=\(entryPoint) safePoint=\(safePoint) click=\(clickPoint)")
 
         guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: clickPoint, mouseButton: .left),
               let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: clickPoint, mouseButton: .left)
